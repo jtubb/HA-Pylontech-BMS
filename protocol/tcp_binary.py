@@ -488,7 +488,7 @@ class TCPBinaryProtocol(ProtocolBase):
     def _parse_alarm_response(self, data: bytes) -> dict[str, Any]:
         """Parse binary alarm data structure.
 
-        Structure:
+        Structure (from PylonToMQTT protocol):
         - modules (1 byte)
         - cells (1 byte)
         - cell_states (cells bytes)
@@ -499,6 +499,7 @@ class TCPBinaryProtocol(ProtocolBase):
         - protect_sts2 (1 byte)
         - system_sts (1 byte)
         - fault_sts (1 byte)
+        - skip81 (2 bytes) - unused field
         - alarm_sts (2 bytes)
         - component_sts (1 byte)
 
@@ -520,7 +521,7 @@ class TCPBinaryProtocol(ProtocolBase):
         temps = list(data[idx:idx + 6])
         idx += 6
 
-        return {
+        result = {
             "modules": modules,
             "cells": cells,
             "cell_states": cell_states,
@@ -531,9 +532,26 @@ class TCPBinaryProtocol(ProtocolBase):
             "protect_sts2": data[idx + 3],
             "system_sts": data[idx + 4],
             "fault_sts": data[idx + 5],
-            "alarm_sts": int.from_bytes(data[idx + 6:idx + 8], 'big'),
-            "component_sts": data[idx + 8] if len(data) > idx + 8 else 0,
+            # Skip 2 bytes (Skip81 field in PylonToMQTT protocol)
+            "alarm_sts": int.from_bytes(data[idx + 8:idx + 10], 'big'),
+            "component_sts": data[idx + 10] if len(data) > idx + 10 else 0,
         }
+
+        # Log Skip81 field for debugging
+        skip81 = int.from_bytes(data[idx + 6:idx + 8], 'big') if len(data) > idx + 7 else 0
+
+        _LOGGER.debug(
+            "Alarm bytes - protect_sts1: 0x%02x, protect_sts2: 0x%02x, system_sts: 0x%02x, "
+            "fault_sts: 0x%02x, skip81: 0x%04x, alarm_sts: 0x%04x",
+            result["protect_sts1"],
+            result["protect_sts2"],
+            result["system_sts"],
+            result["fault_sts"],
+            skip81,
+            result["alarm_sts"]
+        )
+
+        return result
 
     async def get_analog_values(self, dev_id: int = 1) -> dict[str, Any] | None:
         """Fetch analog values (CID2 0x42).
@@ -574,8 +592,20 @@ class TCPBinaryProtocol(ProtocolBase):
             [f"{b:02x}({b})" for b in response[:10]]
         )
 
-        # Skip first byte (device ID echo) before parsing
-        return self._parse_analog_response(response[1:])
+        # CRITICAL FIX: Response has TWO leading bytes before cell count
+        # Byte 0: Unknown (command echo?)
+        # Byte 1: Pack ID (01-06)
+        # Byte 2: Cell count (0x10 = 16 decimal)
+        # Skip first TWO bytes before parsing
+        data_without_prefix = response[2:]
+        _LOGGER.debug(
+            "After stripping 2-byte prefix - First 10 bytes: %s, First byte value: %d (0x%02x)",
+            data_without_prefix[:10].hex(),
+            data_without_prefix[0] if len(data_without_prefix) > 0 else 0,
+            data_without_prefix[0] if len(data_without_prefix) > 0 else 0
+        )
+
+        return self._parse_analog_response(data_without_prefix)
 
     def _parse_analog_response(self, data: bytes) -> dict[str, Any]:
         """Parse binary analog data structure.
@@ -592,7 +622,7 @@ class TCPBinaryProtocol(ProtocolBase):
         - cycle_count (2 bytes)
 
         Args:
-            data: Response bytes (device ID already stripped)
+            data: Response bytes (2-byte prefix already stripped: unknown byte + pack ID)
 
         Returns:
             Parsed analog data
@@ -629,7 +659,7 @@ class TCPBinaryProtocol(ProtocolBase):
             if idx + 2 > len(data):
                 _LOGGER.error("Not enough data for cell %d voltage", len(cell_voltages))
                 break
-            voltage_mv = int.from_bytes(data[idx:idx + 2], 'little')  # BMS uses little-endian
+            voltage_mv = int.from_bytes(data[idx:idx + 2], 'big')  # BMS sends big-endian after ASCII hex decode
             cell_voltages.append(round(voltage_mv / 1000, 3))  # Convert to V
             idx += 2
 
@@ -664,35 +694,51 @@ class TCPBinaryProtocol(ProtocolBase):
             if idx + 2 > len(data):
                 _LOGGER.error("Not enough data for temperature %d", len(cell_temps))
                 break
-            temp_k10 = int.from_bytes(data[idx:idx + 2], 'little')  # BMS uses little-endian
+            temp_k10 = int.from_bytes(data[idx:idx + 2], 'big')  # BMS sends big-endian after ASCII hex decode
             cell_temps.append(round((temp_k10 / 10) - 273.15, 2))  # Convert to Celsius
             idx += 2
 
         # Current (2 bytes, in 10mA units, signed)
-        current_raw = int.from_bytes(data[idx:idx + 2], 'little', signed=True)  # BMS uses little-endian
+        current_raw = int.from_bytes(data[idx:idx + 2], 'big', signed=True)  # BMS sends big-endian
+        _LOGGER.debug(f"Raw current bytes at offset {idx}: {data[idx:idx+2].hex()} = {current_raw} raw")
         current = round(current_raw / 100, 2)  # Convert to A
         idx += 2
 
-        # Voltage (2 bytes, in 10mV units)
-        voltage_raw = int.from_bytes(data[idx:idx + 2], 'little')  # BMS uses little-endian
-        voltage = round(voltage_raw / 100, 2)  # Convert to V
+        # Voltage (2 bytes, in 100mV units)
+        voltage_raw = int.from_bytes(data[idx:idx + 2], 'big')  # BMS sends big-endian
+        _LOGGER.debug(f"Raw voltage bytes at offset {idx}: {data[idx:idx+2].hex()} = {voltage_raw} raw")
+        voltage = round(voltage_raw / 1000, 2)  # Convert from 100mV to V (divide by 1000)
         idx += 2
 
         # Remaining capacity (2 bytes, in 10mAh units)
-        remaining_raw = int.from_bytes(data[idx:idx + 2], 'little')  # BMS uses little-endian
+        remaining_raw = int.from_bytes(data[idx:idx + 2], 'big')  # BMS sends big-endian
+        _LOGGER.debug(f"Raw remaining capacity bytes at offset {idx}: {data[idx:idx+2].hex()} = {remaining_raw} raw")
         remaining = round(remaining_raw / 100, 2)  # Convert to Ah
         idx += 2
 
+        # Skip 4 unknown bytes
+        _LOGGER.debug(f"Unknown bytes at offset {idx}: {data[idx:idx+4].hex()}")
+        idx += 4
+
+        # Cycle count (1 byte)
+        cycles = data[idx] if len(data) > idx else 0
+        _LOGGER.debug(f"Raw cycle count at offset {idx}: {cycles}")
+        idx += 1
+
         # Total capacity (2 bytes, in 10mAh units)
-        total_raw = int.from_bytes(data[idx:idx + 2], 'little')  # BMS uses little-endian
+        total_raw = int.from_bytes(data[idx:idx + 2], 'big')  # BMS sends big-endian
+        _LOGGER.debug(f"Raw total capacity bytes at offset {idx}: {data[idx:idx+2].hex()} = {total_raw} raw")
         total = round(total_raw / 100, 2)  # Convert to Ah
         idx += 2
 
-        # Cycle count (2 bytes)
-        cycles = int.from_bytes(data[idx:idx + 2], 'little') if len(data) >= idx + 2 else 0  # BMS uses little-endian
+        # Check for additional status bytes at the end
+        remaining_bytes = len(data) - idx
+        if remaining_bytes > 0:
+            _LOGGER.debug(f"Remaining {remaining_bytes} bytes at offset {idx}: {data[idx:].hex()}")
 
         # Calculate derived values
         soc = int((remaining / total) * 100) if total > 0 else 0
+        _LOGGER.debug(f"Calculated SOC: {remaining}/{total} = {soc}%")
         power = round(voltage * current, 2)
 
         _LOGGER.debug(
@@ -725,43 +771,104 @@ class TCPBinaryProtocol(ProtocolBase):
             "soc": soc,
         }
 
-    def _decode_alarm_bits(self, alarms: dict[str, Any]) -> dict[str, bool]:
-        """Decode alarm status bits to named boolean flags.
+    def _decode_alarm_bits(self, alarms: dict[str, Any]) -> dict[str, str]:
+        """Decode alarm status bits to grouped status strings.
 
         Args:
             alarms: Raw alarm data from _parse_alarm_response
 
         Returns:
-            Dictionary mapping alarm names to boolean states
+            Dictionary with 4 status groups showing active flags or "Normal"
         """
         def check_bit(value: int, bit: int) -> bool:
             """Check if specific bit is set."""
             return bool(value & (1 << bit))
 
+        def get_active_flags(flags: dict[str, bool]) -> str:
+            """Return comma-separated active flags or 'Normal'."""
+            active = [name for name, is_active in flags.items() if is_active]
+            return ", ".join(active) if active else "Normal"
+
         protect1 = alarms["protect_sts1"]
         protect2 = alarms["protect_sts2"]
+        system = alarms["system_sts"]
+        fault = alarms["fault_sts"]
+        alarm = alarms["alarm_sts"]
 
-        return {
-            # Protection status 1 alarms
-            "charge_ot_alarm": check_bit(protect1, 0),
-            "charge_ut_alarm": check_bit(protect1, 1),
-            "discharge_ot_alarm": check_bit(protect1, 2),
-            "discharge_ut_alarm": check_bit(protect1, 3),
-            "charge_oc_alarm": check_bit(protect1, 4),
-            "discharge_oc_alarm": check_bit(protect1, 5),
-            "cell_ov_alarm": check_bit(protect1, 6),
-            "cell_uv_alarm": check_bit(protect1, 7),
-
-            # Protection status 2 protection states
-            "chg_ot_protection": check_bit(protect2, 0),
-            "chg_ut_protection": check_bit(protect2, 1),
-            "dsg_ot_protection": check_bit(protect2, 2),
-            "dsg_ut_protection": check_bit(protect2, 3),
-            "chg_oc_protection": check_bit(protect2, 4),
-            "dsg_oc_protection": check_bit(protect2, 5),
-            "cell_ov_protection": check_bit(protect2, 6),
-            "cell_uv_protection": check_bit(protect2, 7),
+        # Protection Status (2 bytes)
+        protect_flags = {
+            "CHG_OTP": check_bit(protect2, 0),  # Charge over-temperature protection
+            "CHG_UTP": check_bit(protect2, 1),  # Charge under-temperature protection
+            "DSG_OTP": check_bit(protect2, 2),  # Discharge over-temperature protection
+            "DSG_UTP": check_bit(protect2, 3),  # Discharge under-temperature protection
+            "CHG_OCP": check_bit(protect2, 4),  # Charge over-current protection
+            "DSG_OCP": check_bit(protect2, 5),  # Discharge over-current protection
+            "Cell_OVP": check_bit(protect2, 6),  # Cell over-voltage protection
+            "Cell_UVP": check_bit(protect2, 7),  # Cell under-voltage protection
+            "Pack_OVP": check_bit(protect1, 6),  # Pack over-voltage protection
+            "Pack_UVP": check_bit(protect1, 7),  # Pack under-voltage protection
+            "MOS_OTP": check_bit(protect1, 2),  # MOSFET over-temperature protection
+            "ENV_OTP": check_bit(protect1, 4),  # Environment over-temperature protection
+            "ENV_UTP": check_bit(protect1, 5),  # Environment under-temperature protection
+            "Charger_OVP": check_bit(protect1, 3),  # Charger over-voltage protection
+            "SCP": check_bit(protect1, 0),  # Short circuit protection
         }
+
+        # System Status (1 byte)
+        system_flags = {
+            "Charge_MOS": check_bit(system, 0),
+            "Discharge_MOS": check_bit(system, 1),
+            "Charge_Limit": check_bit(system, 2),
+            "Heater": check_bit(system, 3),
+            "Fully_Charged": check_bit(system, 4),
+            "AC_in": check_bit(system, 5),
+        }
+
+        # Fault Status (1 byte)
+        fault_flags = {
+            "CHG_MOS_Fault": check_bit(fault, 0),
+            "DSG_MOS_Fault": check_bit(fault, 1),
+            "NTC_Fault": check_bit(fault, 2),
+            "Cell_Fault": check_bit(fault, 3),
+            "Sampling_Fault": check_bit(fault, 4),
+            "CCB_Fault": check_bit(fault, 5),
+            "Heater_Fault": check_bit(fault, 6),
+        }
+
+        # Alarm Status (2 bytes)
+        alarm_flags = {
+            "CHG_OT": check_bit(alarm, 0),  # Charge over-temperature alarm
+            "CHG_UT": check_bit(alarm, 1),  # Charge under-temperature alarm
+            "DSG_OT": check_bit(alarm, 2),  # Discharge over-temperature alarm
+            "DSG_UT": check_bit(alarm, 3),  # Discharge under-temperature alarm
+            "CHG_OC": check_bit(alarm, 4),  # Charge over-current alarm
+            "DSG_OC": check_bit(alarm, 5),  # Discharge over-current alarm
+            "Cell_OV": check_bit(alarm, 6),  # Cell over-voltage alarm
+            "Cell_UV": check_bit(alarm, 7),  # Cell under-voltage alarm
+            "Pack_OV": check_bit(alarm, 8),  # Pack over-voltage alarm
+            "Pack_UV": check_bit(alarm, 9),  # Pack under-voltage alarm
+            "SOC_Low": check_bit(alarm, 10),  # Low SOC alarm
+            "MOS_OT": check_bit(alarm, 11),  # MOSFET over-temperature alarm
+            "ENV_OT": check_bit(alarm, 12),  # Environment over-temperature alarm
+            "ENV_UT": check_bit(alarm, 13),  # Environment under-temperature alarm
+        }
+
+        result = {
+            "protect_status": get_active_flags(protect_flags),
+            "system_status": get_active_flags(system_flags),
+            "fault_status": get_active_flags(fault_flags),
+            "alarm_status": get_active_flags(alarm_flags),
+        }
+
+        _LOGGER.debug(
+            "Decoded status - Protect: %s, System: %s, Fault: %s, Alarm: %s",
+            result["protect_status"],
+            result["system_status"],
+            result["fault_status"],
+            result["alarm_status"]
+        )
+
+        return result
 
     async def get_device_info(self) -> DeviceInfo:
         """Retrieve device information.
@@ -826,15 +933,9 @@ class TCPBinaryProtocol(ProtocolBase):
         # Fetch alarm data - optional, may not be supported
         alarms = await self.get_alarm_info(dev_id=pack_id)
         if alarms is not None:
-            alarm_states = self._decode_alarm_bits(alarms)
+            status_groups = self._decode_alarm_bits(alarms)
         else:
-            alarm_states = {}
-
-        # Build temperature dictionary from cell temps
-        temperatures = {
-            f"cell_temp_{i}": temp
-            for i, temp in enumerate(analog["cell_temps"])
-        }
+            status_groups = {}
 
         # Calculate average temperature
         avg_temp = (
@@ -857,15 +958,15 @@ class TCPBinaryProtocol(ProtocolBase):
             power=analog["power"],
 
             # Temperatures
-            temperatures=temperatures,
+            temperatures={},  # Binary protocol uses cell_temps list instead
             avg_temperature=avg_temp,
 
             # Cell-level data
             cell_voltages=analog["cell_voltages"],
             cell_temps=analog["cell_temps"],
 
-            # Alarms and protection
-            alarms=alarm_states,
+            # Status groups (protect, system, fault, alarm)
+            status_groups=status_groups,
 
             # Cycle count
             cycle_count=analog["cycle_count"],

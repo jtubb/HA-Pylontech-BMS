@@ -68,8 +68,8 @@ class BatteryData:
     dc_voltage: float | None = None  # V
     bat_voltage: float | None = None  # V
 
-    # Alarms and protection (binary protocol)
-    alarms: dict[str, bool] = field(default_factory=dict)
+    # Status groups (binary protocol) - strings showing active flags or "Normal"
+    status_groups: dict[str, str] = field(default_factory=dict)
 
     # Cycle count (binary protocol)
     cycle_count: int | None = None

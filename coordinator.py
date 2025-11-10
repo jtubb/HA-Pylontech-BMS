@@ -115,6 +115,8 @@ class PylontechUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Temperatures
         if data.avg_temperature is not None:
             result["avg_temperature"] = data.avg_temperature
+        # Console protocol temperatures (not used in binary protocol)
+        # Binary protocol uses cell_temps list below with proper naming
         for temp_name, temp_value in data.temperatures.items():
             result[f"temp_{temp_name}"] = temp_value
 
@@ -185,12 +187,17 @@ class PylontechUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             result[f"cell_voltage_{idx}"] = voltage
 
         # Cell temperatures (binary protocol)
+        # Temperature sensors represent: 0=Cells1-4, 1=Cells5-8, 2=Cells9-12, 3=Cells13-16, 4=MOS, 5=ENV
+        temp_names = ["temp_cells_1_4", "temp_cells_5_8", "temp_cells_9_12", "temp_cells_13_16", "temp_mos", "temp_env"]
         for idx, temp in enumerate(data.cell_temps):
-            result[f"cell_temp_{idx}"] = temp
+            if idx < len(temp_names):
+                result[temp_names[idx]] = temp
+            else:
+                result[f"temp_sensor_{idx}"] = temp  # Fallback for unexpected sensors
 
-        # Alarms (binary protocol)
-        for alarm_name, alarm_state in data.alarms.items():
-            result[f"alarm_{alarm_name}"] = alarm_state
+        # Status groups (binary protocol) - grouped status sensors
+        for status_name, status_value in data.status_groups.items():
+            result[status_name] = status_value
 
         return result
 

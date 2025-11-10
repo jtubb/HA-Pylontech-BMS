@@ -50,6 +50,14 @@ SENSOR_MAPPINGS: dict[str, tuple[str, SensorDeviceClass | None, str | None, Sens
     "temp_unit_low": ("Lowest Unit Temperature", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS, SensorStateClass.MEASUREMENT),
     "temp_unit_high": ("Highest Unit Temperature", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS, SensorStateClass.MEASUREMENT),
 
+    # Temperature sensors (binary protocol - grouped by cell ranges)
+    "temp_cells_1_4": ("Temperature Cells 1-4", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS, SensorStateClass.MEASUREMENT),
+    "temp_cells_5_8": ("Temperature Cells 5-8", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS, SensorStateClass.MEASUREMENT),
+    "temp_cells_9_12": ("Temperature Cells 9-12", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS, SensorStateClass.MEASUREMENT),
+    "temp_cells_13_16": ("Temperature Cells 13-16", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS, SensorStateClass.MEASUREMENT),
+    "temp_mos": ("MOSFET Temperature", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS, SensorStateClass.MEASUREMENT),
+    "temp_env": ("Environment Temperature", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS, SensorStateClass.MEASUREMENT),
+
     # Voltage extremes
     "cell_volt_low": ("Lowest Cell Voltage", SensorDeviceClass.VOLTAGE, UnitOfElectricPotential.VOLT, SensorStateClass.MEASUREMENT),
     "cell_volt_high": ("Highest Cell Voltage", SensorDeviceClass.VOLTAGE, UnitOfElectricPotential.VOLT, SensorStateClass.MEASUREMENT),
@@ -85,6 +93,12 @@ SENSOR_MAPPINGS: dict[str, tuple[str, SensorDeviceClass | None, str | None, Sens
 
     # Cycle count (binary protocol)
     "cycle_count": ("Cycle Count", None, "cycles", SensorStateClass.TOTAL_INCREASING),
+
+    # Status groups (binary protocol) - show active flags or "Normal"
+    "protect_status": ("Protection Status", None, None, None),
+    "system_status": ("System Status", None, None, None),
+    "fault_status": ("Fault Status", None, None, None),
+    "alarm_status": ("Alarm Status", None, None, None),
 }
 
 
@@ -101,18 +115,14 @@ def _get_sensor_name(sensor_key: str) -> str:
     if sensor_key in SENSOR_MAPPINGS:
         return SENSOR_MAPPINGS[sensor_key][0]
 
-    # Handle dynamic sensors (cell voltages, temps, alarms)
+    # Handle dynamic sensors (cell voltages, temp sensors)
     if sensor_key.startswith("cell_voltage_"):
         idx = sensor_key.split("_")[-1]
         return f"Cell {idx} Voltage"
 
-    if sensor_key.startswith("cell_temp_"):
+    if sensor_key.startswith("temp_sensor_"):
         idx = sensor_key.split("_")[-1]
-        return f"Cell {idx} Temperature"
-
-    if sensor_key.startswith("alarm_"):
-        alarm_name = sensor_key.replace("alarm_", "").replace("_", " ").title()
-        return f"Alarm: {alarm_name}"
+        return f"Temperature Sensor {idx}"
 
     # Fallback: convert snake_case to Title Case
     return sensor_key.replace("_", " ").title()
@@ -131,12 +141,15 @@ def _get_sensor_description(sensor_key: str, sensor_value_type: type) -> SensorE
     # Check predefined mappings
     if sensor_key in SENSOR_MAPPINGS:
         name, device_class, unit, state_class = SENSOR_MAPPINGS[sensor_key]
+        # Set 3 decimal precision for all voltage sensors
+        precision = 3 if device_class == SensorDeviceClass.VOLTAGE else None
         return SensorEntityDescription(
             key=sensor_key,
             name=name,
             device_class=device_class,
             native_unit_of_measurement=unit,
             state_class=state_class,
+            suggested_display_precision=precision,
         )
 
     # Handle dynamic cell voltages
@@ -147,26 +160,17 @@ def _get_sensor_description(sensor_key: str, sensor_value_type: type) -> SensorE
             device_class=SensorDeviceClass.VOLTAGE,
             native_unit_of_measurement=UnitOfElectricPotential.VOLT,
             state_class=SensorStateClass.MEASUREMENT,
+            suggested_display_precision=3,
         )
 
-    # Handle dynamic cell temperatures
-    if sensor_key.startswith("cell_temp_"):
+    # Handle dynamic temperature sensors (fallback for unexpected sensors)
+    if sensor_key.startswith("temp_sensor_"):
         return SensorEntityDescription(
             key=sensor_key,
             name=_get_sensor_name(sensor_key),
             device_class=SensorDeviceClass.TEMPERATURE,
             native_unit_of_measurement=UnitOfTemperature.CELSIUS,
             state_class=SensorStateClass.MEASUREMENT,
-        )
-
-    # Handle alarms (binary sensors represented as regular sensors)
-    if sensor_key.startswith("alarm_"):
-        return SensorEntityDescription(
-            key=sensor_key,
-            name=_get_sensor_name(sensor_key),
-            device_class=None,
-            native_unit_of_measurement=None,
-            state_class=None,
         )
 
     # Fallback based on value type
@@ -255,7 +259,8 @@ class PylontechSensorEntity(
         self._pack_id = pack_id
 
         # Set unique ID including pack ID
-        self._attr_unique_id = f"{sensor_key}-pack{pack_id}-{coordinator.serial_nr}"
+        # Added v2 suffix to force recreation of entities with correct naming
+        self._attr_unique_id = f"{sensor_key}-pack{pack_id}-{coordinator.serial_nr}-v2"
 
         # Set device info for this pack to group entities under pack devices
         pack_idx = pack_id - 1  # Convert to 0-based index
@@ -270,20 +275,29 @@ class PylontechSensorEntity(
         else:
             _LOGGER.error("Pack index %d out of range", pack_idx)
 
-        # Explicitly enable device-based entity naming
-        # This groups the entity under its device and includes device name in entity_id
-        self._attr_has_entity_name = True
+        # Set suggested_object_id to control entity_id generation
+        # This is the proper way to set entity_id in Home Assistant
+        # Remove special characters that Home Assistant doesn't allow in entity IDs
+        device_name_clean = coordinator.device_name.lower().replace(" ", "_").replace("-", "_")
+        sensor_name_clean = description.name.lower().replace(" ", "_").replace(":", "").replace("-", "_")
+        # Remove any double underscores
+        sensor_name_clean = "_".join(filter(None, sensor_name_clean.split("_")))
+
+        self._attr_suggested_object_id = f"{device_name_clean}_pack_{pack_id}_{sensor_name_clean}"
+        self._attr_has_entity_name = True  # Use device name in friendly name
+
+        _LOGGER.debug(
+            "Set suggested_object_id: %s (device=%s, pack=%d, sensor=%s)",
+            self._attr_suggested_object_id,
+            device_name_clean,
+            pack_id,
+            description.name
+        )
 
     @property
     def native_value(self):
         """Return the value reported by the sensor."""
-        value = self.coordinator.sensor_value(self._sensor_key, self._pack_id)
-
-        # Convert boolean alarm values to readable strings
-        if self._sensor_key.startswith("alarm_") and isinstance(value, bool):
-            return "Active" if value else "Normal"
-
-        return value
+        return self.coordinator.sensor_value(self._sensor_key, self._pack_id)
 
     @property
     def available(self) -> bool:
