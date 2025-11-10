@@ -2,12 +2,12 @@
   "domain": "pylontech",
   "name": "Pylontech BMS",
   "codeowners": [
-    "@mletenay"
+    "@jtubb"
   ],
   "config_flow": true,
-  "documentation": "https://github.com/mletenay/home-assistant-pylontech",
+  "documentation": "https://github.com/jtubb/HA-Pylontech-BMS",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/mletenay/home-assistant-pylontech/issues",
+  "issue_tracker": "https://github.com/jtubb/HA-Pylontech-BMS/issues",
   "loggers": ["pylontech"],
   "requirements": [],
   "version": "1.0.0"
