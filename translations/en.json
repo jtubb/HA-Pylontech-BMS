@@ -1,0 +1,33 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Select Protocol Type",
+        "description": "Choose the communication protocol for your Pylontech BMS.\n\n**Console Protocol**: Standard text-based console (port 1234)\n**Binary Protocol**: Frame-based protocol with enhanced data (port 8234)",
+        "data": {
+          "protocol_type": "Protocol Type"
+        }
+      },
+      "connection": {
+        "title": "Configure Connection",
+        "description": "Enter connection details for your Pylontech BMS using {protocol} protocol.",
+        "data": {
+          "host": "IP Address",
+          "port": "Port",
+          "device_name": "Device Name (e.g., 'Battery', 'Solar Bank')",
+          "battery_variant": "Battery Variant"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "timeout": "Connection timed out",
+      "unknown": "Unexpected error occurred"
+    },
+    "abort": {
+      "already_configured": "Device is already configured",
+      "already_in_progress": "Configuration flow is already in progress"
+    },
+    "flow_title": "Pylontech BMS"
+  }
+}

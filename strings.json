@@ -1,0 +1,31 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Select Protocol Type",
+        "description": "Choose the communication protocol for your Pylontech BMS.\n\n**Console Protocol**: Standard text-based console (port 1234)\n**Binary Protocol**: Frame-based protocol with enhanced data (port 8234)",
+        "data": {
+          "protocol_type": "Protocol Type"
+        }
+      },
+      "connection": {
+        "title": "Configure Connection",
+        "description": "Enter connection details for your Pylontech BMS using {protocol} protocol.",
+        "data": {
+          "host": "[%key:common::config_flow::data::ip%]",
+          "port": "[%key:common::config_flow::data::port%]",
+          "battery_variant": "Battery Variant"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+      "timeout": "Connection timed out",
+      "unknown": "[%key:common::config_flow::error::unknown%]"
+    },
+    "abort": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]",
+      "already_in_progress": "[%key:common::config_flow::abort::already_in_progress%]"
+    }
+  }
+}
