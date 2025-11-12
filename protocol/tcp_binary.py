@@ -118,14 +118,6 @@ class TCPBinaryProtocol(ProtocolBase):
 
         # Assemble frame: ~ + ASCII_HEX_HEADER + ASCII_HEX_INFO + ASCII_HEX_CHECKSUM + \r
         frame = b'~' + header_bytes + info + checksum_hex + b'\r'
-
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            _LOGGER.debug("Built frame: %s", frame)
-            _LOGGER.debug("  Header (hex): %s", header)
-            _LOGGER.debug("  Address: 0x%02X", addr_byte)
-            _LOGGER.debug("  Info (ascii hex): %s", info.decode('ascii') if info else "(empty)")
-            _LOGGER.debug("  Checksum: %04X", checksum)
-
         return frame
 
     def _calculate_checksum(self, data: bytes) -> bytes:
@@ -266,10 +258,6 @@ class TCPBinaryProtocol(ProtocolBase):
             if byte == b'\r':
                 break
 
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            _LOGGER.debug("Received ASCII frame: %s", response)
-            _LOGGER.debug("Received ASCII frame (hex): %s", response.hex())
-
         return self._parse_frame(bytes(response))
 
     def _parse_frame(self, frame: bytes) -> bytes:
@@ -369,20 +357,6 @@ class TCPBinaryProtocol(ProtocolBase):
                 raise ValueError(f"Failed to decode info as hex: {ascii_info}") from err
         else:
             decoded_info = b""
-
-        # Validate info length matches decoded info
-        info_len = self._decode_info_length(header_binary[4:6])  # LEN is bytes 4-5 of header
-
-        if len(decoded_info) != info_len:
-            _LOGGER.debug(
-                "Info length mismatch: header says %d, got %d bytes after decoding. ASCII: %s",
-                info_len,
-                len(decoded_info),
-                ascii_info.decode('ascii') if ascii_info else "(empty)"
-            )
-
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            _LOGGER.debug("Parsed info payload: %s", decoded_info.hex() if decoded_info else "(empty)")
 
         return decoded_info
 
@@ -521,7 +495,7 @@ class TCPBinaryProtocol(ProtocolBase):
         temps = list(data[idx:idx + 6])
         idx += 6
 
-        result = {
+        return {
             "modules": modules,
             "cells": cells,
             "cell_states": cell_states,
@@ -536,22 +510,6 @@ class TCPBinaryProtocol(ProtocolBase):
             "alarm_sts": int.from_bytes(data[idx + 8:idx + 10], 'big'),
             "component_sts": data[idx + 10] if len(data) > idx + 10 else 0,
         }
-
-        # Log Skip81 field for debugging
-        skip81 = int.from_bytes(data[idx + 6:idx + 8], 'big') if len(data) > idx + 7 else 0
-
-        _LOGGER.debug(
-            "Alarm bytes - protect_sts1: 0x%02x, protect_sts2: 0x%02x, system_sts: 0x%02x, "
-            "fault_sts: 0x%02x, skip81: 0x%04x, alarm_sts: 0x%04x",
-            result["protect_sts1"],
-            result["protect_sts2"],
-            result["system_sts"],
-            result["fault_sts"],
-            skip81,
-            result["alarm_sts"]
-        )
-
-        return result
 
     async def get_analog_values(self, dev_id: int = 1) -> dict[str, Any] | None:
         """Fetch analog values (CID2 0x42).
@@ -575,22 +533,10 @@ class TCPBinaryProtocol(ProtocolBase):
         if len(response) < 45:
             _LOGGER.warning(
                 "Analog values response too short: got %d bytes, expected minimum 45. "
-                "Data: %s. Command may not be supported by this BMS variant.",
-                len(response),
-                response.hex()
+                "Command may not be supported by this BMS variant.",
+                len(response)
             )
             return None
-
-        # Log full response for diagnostic purposes
-        _LOGGER.debug(
-            "Raw analog response (%d bytes): %s",
-            len(response),
-            response.hex()
-        )
-        _LOGGER.debug(
-            "First 10 bytes decoded: %s",
-            [f"{b:02x}({b})" for b in response[:10]]
-        )
 
         # CRITICAL FIX: Response has TWO leading bytes before cell count
         # Byte 0: Unknown (command echo?)
@@ -598,12 +544,6 @@ class TCPBinaryProtocol(ProtocolBase):
         # Byte 2: Cell count (0x10 = 16 decimal)
         # Skip first TWO bytes before parsing
         data_without_prefix = response[2:]
-        _LOGGER.debug(
-            "After stripping 2-byte prefix - First 10 bytes: %s, First byte value: %d (0x%02x)",
-            data_without_prefix[:10].hex(),
-            data_without_prefix[0] if len(data_without_prefix) > 0 else 0,
-            data_without_prefix[0] if len(data_without_prefix) > 0 else 0
-        )
 
         return self._parse_analog_response(data_without_prefix)
 
@@ -636,21 +576,11 @@ class TCPBinaryProtocol(ProtocolBase):
         cells = data[idx]
         idx += 1
 
-        # DIAGNOSTIC: Log raw data to troubleshoot cell count issue
-        _LOGGER.debug(
-            "Parsing analog response: cells=%d, data_length=%d, first_20_bytes=%s",
-            cells,
-            len(data),
-            data[:20].hex()
-        )
-
         # Validate cell count is reasonable (Pylontech/SOK packs typically have 8-24 cells)
         if cells > 24 or cells < 8:
             _LOGGER.warning(
-                "Unusual cell count: %d cells. Expected 8-24 for typical pack. "
-                "Data will be parsed as-is. First 40 bytes: %s",
-                cells,
-                data[:40].hex()
+                "Unusual cell count: %d cells. Expected 8-24 for typical pack.",
+                cells
             )
 
         # Cell voltages (2 bytes each, in mV)
@@ -667,25 +597,11 @@ class TCPBinaryProtocol(ProtocolBase):
         temp_count = data[idx]
         idx += 1
 
-        _LOGGER.debug(
-            "Temperature count at offset %d: %d (0x%02x). "
-            "Previous 10 bytes: %s, Next 10 bytes: %s",
-            idx - 1,
-            temp_count,
-            temp_count,
-            data[max(0, idx-11):idx-1].hex(),
-            data[idx:idx+10].hex()
-        )
-
         # Validate temperature count
         if temp_count > 16:
             _LOGGER.warning(
-                "Unusual temperature count: %d (0x%02x). Expected 2-8 for typical pack. "
-                "Full context - Previous 20 bytes: %s, Next 20 bytes: %s",
-                temp_count,
-                temp_count,
-                data[max(0, idx-21):idx-1].hex(),
-                data[idx:min(len(data), idx+20)].hex()
+                "Unusual temperature count: %d. Expected 2-8 for typical pack.",
+                temp_count
             )
 
         # Cell temperatures (2 bytes each, Kelvin * 10)
@@ -700,64 +616,34 @@ class TCPBinaryProtocol(ProtocolBase):
 
         # Current (2 bytes, in 10mA units, signed)
         current_raw = int.from_bytes(data[idx:idx + 2], 'big', signed=True)  # BMS sends big-endian
-        _LOGGER.debug(f"Raw current bytes at offset {idx}: {data[idx:idx+2].hex()} = {current_raw} raw")
         current = round(current_raw / 100, 2)  # Convert to A
         idx += 2
 
         # Voltage (2 bytes, in 100mV units)
         voltage_raw = int.from_bytes(data[idx:idx + 2], 'big')  # BMS sends big-endian
-        _LOGGER.debug(f"Raw voltage bytes at offset {idx}: {data[idx:idx+2].hex()} = {voltage_raw} raw")
         voltage = round(voltage_raw / 1000, 2)  # Convert from 100mV to V (divide by 1000)
         idx += 2
 
         # Remaining capacity (2 bytes, in 10mAh units)
         remaining_raw = int.from_bytes(data[idx:idx + 2], 'big')  # BMS sends big-endian
-        _LOGGER.debug(f"Raw remaining capacity bytes at offset {idx}: {data[idx:idx+2].hex()} = {remaining_raw} raw")
         remaining = round(remaining_raw / 100, 2)  # Convert to Ah
         idx += 2
 
         # Skip 4 unknown bytes
-        _LOGGER.debug(f"Unknown bytes at offset {idx}: {data[idx:idx+4].hex()}")
         idx += 4
 
         # Cycle count (1 byte)
         cycles = data[idx] if len(data) > idx else 0
-        _LOGGER.debug(f"Raw cycle count at offset {idx}: {cycles}")
         idx += 1
 
         # Total capacity (2 bytes, in 10mAh units)
         total_raw = int.from_bytes(data[idx:idx + 2], 'big')  # BMS sends big-endian
-        _LOGGER.debug(f"Raw total capacity bytes at offset {idx}: {data[idx:idx+2].hex()} = {total_raw} raw")
         total = round(total_raw / 100, 2)  # Convert to Ah
         idx += 2
 
-        # Check for additional status bytes at the end
-        remaining_bytes = len(data) - idx
-        if remaining_bytes > 0:
-            _LOGGER.debug(f"Remaining {remaining_bytes} bytes at offset {idx}: {data[idx:].hex()}")
-
         # Calculate derived values
         soc = int((remaining / total) * 100) if total > 0 else 0
-        _LOGGER.debug(f"Calculated SOC: {remaining}/{total} = {soc}%")
         power = round(voltage * current, 2)
-
-        _LOGGER.debug(
-            "Parsed analog data - Cells: %d voltages (range: %.3f-%.3fV), "
-            "Temps: %d sensors (range: %.1f-%.1fC), "
-            "Pack: %.2fV/%.2fA, Capacity: %.2f/%.2f Ah, SOC: %d%%, Cycles: %d",
-            len(cell_voltages),
-            min(cell_voltages) if cell_voltages else 0,
-            max(cell_voltages) if cell_voltages else 0,
-            len(cell_temps),
-            min(cell_temps) if cell_temps else 0,
-            max(cell_temps) if cell_temps else 0,
-            voltage,
-            current,
-            remaining,
-            total,
-            soc,
-            cycles
-        )
 
         return {
             "cell_voltages": cell_voltages,
@@ -853,22 +739,12 @@ class TCPBinaryProtocol(ProtocolBase):
             "ENV_UT": check_bit(alarm, 13),  # Environment under-temperature alarm
         }
 
-        result = {
+        return {
             "protect_status": get_active_flags(protect_flags),
             "system_status": get_active_flags(system_flags),
             "fault_status": get_active_flags(fault_flags),
             "alarm_status": get_active_flags(alarm_flags),
         }
-
-        _LOGGER.debug(
-            "Decoded status - Protect: %s, System: %s, Fault: %s, Alarm: %s",
-            result["protect_status"],
-            result["system_status"],
-            result["fault_status"],
-            result["alarm_status"]
-        )
-
-        return result
 
     async def get_device_info(self) -> DeviceInfo:
         """Retrieve device information.

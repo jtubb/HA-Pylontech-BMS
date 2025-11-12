@@ -222,13 +222,6 @@ class PylontechUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         pack_sensors[sensor_name] = type(sensor_value)
 
                     self.available_sensors_per_pack[pack_id] = pack_sensors
-
-                    _LOGGER.debug(
-                        "Detected %d sensors from pack %d: %s",
-                        len(pack_sensors),
-                        pack_id,
-                        list(pack_sensors.keys()),
-                    )
                 except Exception as err:
                     _LOGGER.warning("Failed to detect sensors for pack %d: %s", pack_id, err)
                     # Store empty dict for this pack so we can continue

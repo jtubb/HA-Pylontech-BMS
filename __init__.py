@@ -41,15 +41,8 @@ def _create_protocol(entry: ConfigEntry) -> ProtocolBase:
 
     if protocol_type == PROTOCOL_BINARY:
         variant = entry.data.get(CONF_BATTERY_VARIANT, VARIANT_STANDARD)
-        _LOGGER.debug(
-            "Creating TCP binary protocol for %s:%s (variant=%s)",
-            host,
-            port,
-            variant,
-        )
         return TCPBinaryProtocol(host=host, port=port, variant=variant)
     else:
-        _LOGGER.debug("Creating TCP console protocol for %s:%s", host, port)
         return TCPConsoleProtocol(host=host, port=port)
 
 
@@ -62,11 +55,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Validate connection and get device info
     try:
-        _LOGGER.debug(
-            "Connecting to Pylontech BMS at %s port %s",
-            entry.data[CONF_HOST],
-            entry.data[CONF_PORT],
-        )
         await protocol.connect()
         device_info = await protocol.get_device_info()
         _LOGGER.info(

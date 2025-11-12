@@ -1,6 +1,19 @@
 # Home Assistant - Pylontech BMS Integration
 
-A Home Assistant custom component for monitoring Pylontech (and compatible) high-voltage Battery Management Systems (BMS) via TCP binary protocol.
+[![GitHub Release][releases-shield]][releases]
+[![GitHub Activity][commits-shield]][commits]
+[![License][license-shield]](LICENSE)
+[![HACS][hacs-shield]][hacs]
+
+A Home Assistant custom component for monitoring Pylontech (and compatible) high-voltage Battery Management Systems (BMS) via TCP console and binary protocols.
+
+[releases-shield]: https://img.shields.io/github/release/jtubb/HA-Pylontech-BMS.svg?style=for-the-badge
+[releases]: https://github.com/jtubb/HA-Pylontech-BMS/releases
+[commits-shield]: https://img.shields.io/github/commit-activity/y/jtubb/HA-Pylontech-BMS.svg?style=for-the-badge
+[commits]: https://github.com/jtubb/HA-Pylontech-BMS/commits/main
+[hacs-shield]: https://img.shields.io/badge/HACS-Default-41BDF5.svg?style=for-the-badge
+[hacs]: https://github.com/hacs/integration
+[license-shield]: https://img.shields.io/github/license/jtubb/HA-Pylontech-BMS.svg?style=for-the-badge
 
 ## Features
 
@@ -21,6 +34,7 @@ A Home Assistant custom component for monitoring Pylontech (and compatible) high
 
 - Pylontech high-voltage BMS
 - SOK batteries with compatible BMS
+- Pylontech BMS using console commands
 - Other manufacturers using similar binary protocol
 
 ## Installation
@@ -39,13 +53,14 @@ A Home Assistant custom component for monitoring Pylontech (and compatible) high
 
 ## Configuration
 
-1. Go to **Settings → Devices & Services**
-2. Click **+ Add Integration**
-3. Search for **Pylontech BMS**
-4. Enter your BMS connection details:
-   - **Host**: IP address of your BMS
-   - **Port**: TCP port (default: 1234)
-   - **Device Name**: Custom base name for devices (default: "Battery")
+1.   Go to **Settings → Devices & Services**
+2.   Click **+ Add Integration**
+3.   Search for **Pylontech BMS**
+4.   Select Console Protocol for v3 and above BMS devices, select Binary Protocol for all other devices.
+5.   Enter your BMS connection details:
+       - **Host**: IP address of your BMS
+       - **Port**: TCP port (default: 1234)
+       - **Device Name**: Custom base name for devices (default: "Battery")
 
 ## Device Structure
 
@@ -81,11 +96,12 @@ Each pack provides approximately 56 sensors (varies by BMS model):
 
 ### Protocol
 
-This integration uses the Pylontech TCP binary protocol:
+This integration uses the Pylontech TCP binary and console protocol:
 - Default port: 1234
-- Binary protocol with ASCII hex encoding
-- Little-endian byte order for multi-byte values
+- Console protocol for Firmware version 3+
+- Binary protocol for Firmware version 2.0 or 2.5 with ASCII hex encoding
 - Frame-based communication with CRC validation
+- Only tested on Firmware version 2.5
 
 ### Architecture
 
@@ -109,9 +125,6 @@ logger:
 
 ### Common Issues
 
-**Entities not grouped under devices**:
-- Delete the integration and re-add it to recreate device structure
-
 **Wrong number of sensors**:
 - Check debug logs for parsing information
 - Verify BMS protocol compatibility
@@ -128,11 +141,39 @@ See `claudedocs/` directory for detailed technical documentation:
 - `cell_count_bug_fix.md`: Sensor detection improvements
 - `diagnostic_logging_guide.md`: Troubleshooting guide
 
+## Contributing
+
+Contributions are welcome! Please:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+### Development Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/jtubb/HA-Pylontech-BMS.git
+cd HA-Pylontech-BMS
+
+# Install in development mode
+ln -s $(pwd) ~/.homeassistant/custom_components/pylontech
+
+# Enable debug logging in configuration.yaml
+logger:
+  default: info
+  logs:
+    custom_components.pylontech: debug
+```
+
 ## Credits
 
-Original protocol implementation based on Pylontech communication specifications.
-Multi-pack architecture and little-endian fixes contributed by Claude Code.
+- Original protocol implementation based on [PylonToMQTT](https://github.com/ClassicDIY/PylonToMQTT/blob/main/Code/Python/support/pylontech.py)
+- Home Assistant integration adapted from [mletenay/home-assistant-pylontech](https://github.com/mletenay/home-assistant-pylontech)
+- Multi-pack architecture and protocol enhancements contributed by [Claude Code](https://claude.ai/code)
 
 ## License
 
-This project is provided as-is for Home Assistant integration purposes.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

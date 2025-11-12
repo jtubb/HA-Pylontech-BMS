@@ -26,3 +26,5 @@ htmlcov/
 
 # Local development
 *.log
+.claude/
+claudedocs/

@@ -197,13 +197,6 @@ async def async_setup_entry(
         KEY_COORDINATOR
     ]
 
-    _LOGGER.info(
-        "Setting up sensors - Pack count: %d, Device name: %s, Pack devices: %d",
-        coordinator.pack_count,
-        coordinator.device_name,
-        len(coordinator.pack_device_infos)
-    )
-
     entities: list[PylontechSensorEntity] = []
 
     # Create sensors for each pack based on what's actually available in that pack
@@ -226,8 +219,6 @@ async def async_setup_entry(
                     pack_id=pack_id,
                 )
             )
-
-        _LOGGER.debug("Created %d sensor entities for pack %d", len(pack_sensors), pack_id)
 
     _LOGGER.info("Created %d sensor entities across %d packs", len(entities), coordinator.pack_count)
     async_add_entities(entities)
@@ -266,12 +257,6 @@ class PylontechSensorEntity(
         pack_idx = pack_id - 1  # Convert to 0-based index
         if pack_idx < len(coordinator.pack_device_infos):
             self._attr_device_info = coordinator.pack_device_infos[pack_idx]
-            _LOGGER.debug(
-                "Entity %s (pack %d) assigned to device: %s",
-                sensor_key,
-                pack_id,
-                self._attr_device_info.get("name", "Unknown")
-            )
         else:
             _LOGGER.error("Pack index %d out of range", pack_idx)
 
@@ -285,14 +270,6 @@ class PylontechSensorEntity(
 
         self._attr_suggested_object_id = f"{device_name_clean}_pack_{pack_id}_{sensor_name_clean}"
         self._attr_has_entity_name = True  # Use device name in friendly name
-
-        _LOGGER.debug(
-            "Set suggested_object_id: %s (device=%s, pack=%d, sensor=%s)",
-            self._attr_suggested_object_id,
-            device_name_clean,
-            pack_id,
-            description.name
-        )
 
     @property
     def native_value(self):

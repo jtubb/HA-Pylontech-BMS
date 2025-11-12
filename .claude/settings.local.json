@@ -6,7 +6,8 @@
       "Bash(mkdir:*)",
       "Bash(tree:*)",
       "Bash(python3:*)",
-      "mcp__sequential-thinking__sequentialthinking"
+      "mcp__sequential-thinking__sequentialthinking",
+      "Bash(git -C /home/docker/homeassistant/config/custom_components/pylontech remote:*)"
     ],
     "deny": [],
     "ask": []

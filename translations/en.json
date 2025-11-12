@@ -29,5 +29,16 @@
       "already_in_progress": "Configuration flow is already in progress"
     },
     "flow_title": "Pylontech BMS"
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Pylontech BMS Options",
+        "description": "Configure options for Pylontech BMS integration.",
+        "data": {
+          "device_name": "Device Name (e.g., 'Battery', 'Solar Bank')"
+        }
+      }
+    }
   }
 }

@@ -100,10 +100,6 @@ class TCPConsoleProtocol(ProtocolBase):
             raise ValueError("Command echo mismatch")
         if lines.pop(0) != "@":
             raise ValueError("Missing @ separator")
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            _LOGGER.debug("Response lines for '%s':", cmd)
-            for each in lines:
-                _LOGGER.debug("  %s", each)
         return tuple(lines)
 
     async def bat(self) -> BatCommand:
