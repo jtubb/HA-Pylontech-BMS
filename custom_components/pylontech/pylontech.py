@@ -246,6 +246,229 @@ class PwrCommand:
         return result
 
 
+def _is_present_pwr_row(tokens: list[str]) -> bool:
+    """True for a flat-table data row describing a present pack."""
+    return len(tokens) > 12 and tokens[0].isdigit() and tokens[8] != "Absent"
+
+
+def is_flat_pwr(lines) -> bool:
+    """Return True if a `pwr` response is the flat multi-pack table.
+
+    The flat table has a header row naming the Volt, Curr and Base.St
+    columns. The legacy single-pack format has no such header.
+    """
+    for line in lines:
+        if "Volt" in line and "Curr" in line and "Base.St" in line:
+            return True
+    return False
+
+
+@dataclass
+class PwrPack:
+    """One pack's data from a row of the flat `pwr` table."""
+
+    index: int
+    volt: float  # V
+    curr: float  # A (signed)
+    temp: float  # C
+    cell_temp_low: float  # C
+    cell_temp_high: float  # C
+    cell_volt_low: float  # V
+    cell_volt_high: float  # V
+    base_state: str
+    volt_state: str
+    curr_state: str
+    temp_state: str
+    soc: int  # %
+
+    @property
+    def cell_volt_delta_mv(self) -> int:
+        """Cell voltage spread (highest - lowest cell voltage) in mV."""
+        return round((self.cell_volt_high - self.cell_volt_low) * 1000)
+
+
+class PwrTableCommand:
+    """Parses the flat multi-pack `pwr` table (one row per pack slot).
+
+    Only columns 0 to 12 are read; the Time column (index 13) contains a
+    space, so positional parsing past column 12 is unreliable. Absent slots
+    (Base.St == "Absent") are skipped. Packs are keyed by their reported
+    index so a non-contiguous stack is still addressed correctly.
+    """
+
+    def __init__(self, lines) -> None:
+        """Initialize by parsing every present pack row."""
+        self.packs: dict[int, PwrPack] = {}
+        for line in lines:
+            tokens = line.split()
+            if not _is_present_pwr_row(tokens):
+                continue
+            try:
+                index = int(tokens[0])
+                pack = PwrPack(
+                    index=index,
+                    volt=int(tokens[1]) / 1000,
+                    curr=int(tokens[2]) / 1000,
+                    temp=int(tokens[3]) / 1000,
+                    cell_temp_low=int(tokens[4]) / 1000,
+                    cell_temp_high=int(tokens[5]) / 1000,
+                    cell_volt_low=int(tokens[6]) / 1000,
+                    cell_volt_high=int(tokens[7]) / 1000,
+                    base_state=tokens[8],
+                    volt_state=tokens[9],
+                    curr_state=tokens[10],
+                    temp_state=tokens[11],
+                    soc=int(tokens[12].replace("%", "")),
+                )
+            except (ValueError, IndexError):
+                # A present-looking row with a corrupt numeric field (e.g. serial
+                # noise) is skipped rather than failing the whole table parse.
+                continue
+            self.packs[index] = pack
+
+    @property
+    def pack_count(self) -> int:
+        """Number of present packs."""
+        return len(self.packs)
+
+    def pack(self, pack_id: int) -> PwrPack | None:
+        """Return the pack with this reported index (column 0), or None if absent."""
+        return self.packs.get(pack_id)
+
+
+class PwrDetailCommand:
+    """Parses `pwr <index>` per-pack detail (Key : value unit lines).
+
+    Complementary to the flat table: supplies total capacity, max voltage,
+    cycle count and health statuses, which the flat table does not carry.
+    """
+
+    def __init__(self, lines) -> None:
+        """Initialize by scanning the detail lines for known keys."""
+        self.total_capacity: float | None = None  # Ah
+        self.max_voltage: float | None = None  # V
+        self.soh_status: str | None = None
+        self.heater_status: str | None = None
+        self.system_fault: str | None = None
+
+        for line in lines:
+            if ":" not in line:
+                continue
+            key, _, rest = line.partition(":")
+            key = key.strip()
+            tokens = rest.split()
+            value = tokens[0] if tokens else ""
+            if not value:
+                continue
+            if key == "Total Coulomb":
+                self.total_capacity = int(value) / 1000
+            elif key == "Max Voltage":
+                self.max_voltage = int(value) / 1000
+            elif key == "Soh. Status":
+                self.soh_status = value
+            elif key == "Heater Status":
+                self.heater_status = value
+            elif key == "System Fault":
+                self.system_fault = value
+
+
+@dataclass
+class BatCell:
+    """One cell's data from a row of the `bat <index>` per-cell table."""
+
+    index: int
+    volt: float  # V
+    balancing: bool
+
+
+class BatPackCommand:
+    """Parses the `bat <index>` per-cell table for one pack.
+
+    Reads only the cell voltage (token 1) and the balancing flag (last
+    token). Using the first, second and last tokens avoids the two-token
+    `Coulomb` field ("92713 mAH"), which would otherwise shift positional
+    indices. Malformed rows are skipped.
+    """
+
+    def __init__(self, lines) -> None:
+        """Initialize by parsing every cell row."""
+        self.cells: list[BatCell] = []
+        for line in lines:
+            tokens = line.split()
+            if len(tokens) < 3 or not tokens[0].isdigit():
+                continue
+            try:
+                cell = BatCell(
+                    index=int(tokens[0]),
+                    volt=int(tokens[1]) / 1000,
+                    balancing=tokens[-1] == "Y",
+                )
+            except (ValueError, IndexError):
+                continue
+            self.cells.append(cell)
+
+    @property
+    def cell_voltages(self) -> list[float]:
+        """Return per-cell voltages in the order the cells were reported."""
+        return [cell.volt for cell in self.cells]
+
+    @property
+    def balancing_count(self) -> int:
+        """Return the number of cells currently balancing."""
+        return sum(1 for cell in self.cells if cell.balancing)
+
+
+# Protection/fault event counters summed into one diagnostic total. Excludes
+# informational counters (charge/idle/status counts, cycle count, SOH, etc.).
+_STAT_PROTECTION_KEYS = (
+    "COC Times", "COC2 Times", "DOC Times", "DOC2 Times",
+    "COCA Times", "DOCA Times", "SC Times",
+    "Bat OV Times", "Bat HV Times", "Bat LV Times", "Bat UV Times",
+    "Pwr OV Times", "Pwr HV Times", "Pwr LV Times", "Pwr UV Times",
+    "COT Times", "CUT Times", "DOT Times", "DUT Times",
+    "CHT Times", "CLT Times", "DHT Times", "DLT Times",
+    "Input OV Times", "RV Times", "BMICERR Times",
+)
+
+
+class StatCommand:
+    """Parses the `stat <index>` per-pack statistics table.
+
+    Order-independent key/value parse, tolerating line noise (e.g. a corrupted
+    `LifeWa}&(` label) and the colon-less `Device address` line. Exposes the
+    real cycle count (`CYCLE Times`) and a summed protection/fault-event count.
+    """
+
+    def __init__(self, lines: tuple[str]) -> None:
+        """Initialize by parsing the key/value statistics lines."""
+        fields: dict[str, str] = {}
+        for line in lines:
+            if ":" not in line:
+                continue
+            key, _, value = line.partition(":")
+            fields[" ".join(key.split())] = value.strip()
+
+        def as_int(label: str) -> int | None:
+            raw = fields.get(label)
+            if raw is None:
+                return None
+            try:
+                return int(raw)
+            except ValueError:
+                return None
+
+        self.cycle_count: int | None = as_int("CYCLE Times")
+
+        total = 0
+        seen = False
+        for key in _STAT_PROTECTION_KEYS:
+            value = as_int(key)
+            if value is not None:
+                total += value
+                seen = True
+        self.protection_events: int | None = total if seen else None
+
+
 class BatCommand:
     """Pylontech BMS console command 'bat'."""
 
@@ -306,41 +529,79 @@ class InfoCommand:
     """Pylontech BMS console command 'info'."""
 
     def __init__(self, lines: tuple[str]) -> None:
-        """Initialize the info command."""
-        source = list(lines)
-        self.device_address = Integer("Device address").fetch(source)
-        self.manufacturer = Text("Manufacturer").fetch(source)
-        self.device_name = Text("Device name").fetch(source)
-        self.board_version = Text("Board version").fetch(source)
-        self.hard_version = Text("Hard version").fetch(source, "Hard  version")
-        self.main_sw_version = Text("Main Soft version").fetch(source)
-        self.sw_version = Text("Soft version").fetch(source, "Soft  version")
-        self.boot_version = Text("Boot version").fetch(source, "Boot  version")
-        self.comm_version = Text("Comm version").fetch(source)
-        self.release_date = Text("Release Date").fetch(source)
-        self.barcode = Text("Barcode").fetch(source)
-        self.pcba_barcode = Text("PCBA Barcode").fetch(source)
-        self.module_barcode = Text("Module Barcode").fetch(source)
-        self.pwr_supply_barcode = Text("PowerSupply Barcode").fetch(source)
-        self.device_test_time = Text("Device Test Time").fetch(source)
-        self.specification = Text("Specification").fetch(source)
-        self.cell_number = Integer("Cell Number").fetch(source)
-        self.max_discharge_current = Current("Max Discharge Curr").fetch(
-            source, "Max Dischg Curr"
-        )
-        self.max_charge_current = Current("Max Charge Curr").fetch(source)
-        self.shut_circuit = Text("Shut Circuit").fetch(source)
-        self.relay_feedback = Text("Relay Feedback").fetch(source)
-        self.new_board = Text("New Board").fetch(source)
+        """Initialize the info command.
 
-        self.bmu_modules: tuple[str] = []
-        self.bmu_pcbas: tuple[str] = []
+        Parses the `key : value` lines into a dict keyed by the
+        whitespace-normalised label, so unexpected or reordered lines (for
+        example a `Board` line between `Board version` and `Main Soft
+        version`) do not derail the parse.
+        """
+        fields: dict[str, str] = {}
+        for line in lines:
+            if ":" not in line:
+                continue
+            key, _, value = line.partition(":")
+            fields[" ".join(key.split())] = value.strip()
 
-        for line in source:
-            if line.startswith("Module"):
-                self.bmu_modules.insert(0, line.split()[2])
-            if line.startswith("PCBA"):
-                self.bmu_pcbas.insert(0, line.split()[2])
+        def text(label: str) -> Text:
+            sensor = Text(label)
+            if fields.get(label):
+                sensor.value = fields[label]
+            return sensor
+
+        def integer(label: str) -> Integer:
+            sensor = Integer(label)
+            raw = fields.get(label)
+            if raw:
+                try:
+                    sensor.value = int(raw)
+                except ValueError:
+                    pass
+            return sensor
+
+        def current(label: str) -> Current:
+            sensor = Current(label)
+            raw = fields.get(label)
+            if raw:
+                try:
+                    sensor.value = int(raw.replace("mA", "").strip())
+                except ValueError:
+                    pass
+            return sensor
+
+        self.device_address = integer("Device address")
+        self.manufacturer = text("Manufacturer")
+        self.device_name = text("Device name")
+        self.board_version = text("Board version")
+        self.hard_version = text("Hard version")
+        self.main_sw_version = text("Main Soft version")
+        self.sw_version = text("Soft version")
+        self.boot_version = text("Boot version")
+        self.comm_version = text("Comm version")
+        self.release_date = text("Release Date")
+        self.barcode = text("Barcode")
+        self.pcba_barcode = text("PCBA Barcode")
+        self.module_barcode = text("Module Barcode")
+        self.pwr_supply_barcode = text("PowerSupply Barcode")
+        self.device_test_time = text("Device Test Time")
+        self.specification = text("Specification")
+        self.cell_number = integer("Cell Number")
+        self.max_discharge_current = current("Max Dischg Curr")
+        self.max_charge_current = current("Max Charge Curr")
+        self.shut_circuit = text("Shut Circuit")
+        self.relay_feedback = text("Relay Feedback")
+        self.new_board = text("New Board")
+
+        self.bmu_modules: list[str] = []
+        self.bmu_pcbas: list[str] = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            if line.startswith("Module") and "Barcode" not in line:
+                self.bmu_modules.insert(0, parts[2])
+            if line.startswith("PCBA") and "Barcode" not in line:
+                self.bmu_pcbas.insert(0, parts[2])
 
     def __str__(self) -> str:
         """Return string representation of info command."""
