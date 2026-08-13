@@ -15,11 +15,14 @@ class BatteryData:
     # Pack-level measurements
     pack_voltage: float
     pack_current: float
-    soc: int  # State of charge percentage
+    # None when the frame was truncated and the value could not be read.
+    # The coordinator skips None fields, leaving the entity unavailable rather
+    # than publishing a fabricated 0.
+    soc: int | None  # State of charge percentage
 
     # Capacity
     remaining_capacity: float  # Ah
-    total_capacity: float  # Ah
+    total_capacity: float | None  # Ah
 
     # Power (calculated or provided)
     power: float | None = None  # W
