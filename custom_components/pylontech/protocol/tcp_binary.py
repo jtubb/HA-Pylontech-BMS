@@ -68,6 +68,9 @@ class TCPBinaryProtocol(ProtocolBase):
         self.version_byte = self.VERSION_STANDARD
         self.reader: StreamReader | None = None
         self.writer: StreamWriter | None = None
+        # ADDR byte from the most recently parsed response frame, used to check
+        # that a reply belongs to the pack we asked about.
+        self._last_response_addr: int | None = None
 
     async def connect(self) -> None:
         """Establish TCP connection to BMS."""
@@ -322,6 +325,22 @@ class TCPBinaryProtocol(ProtocolBase):
         if len(header_binary) != 6:
             raise ValueError(f"Invalid header length: {len(header_binary)} bytes (expected 6)")
 
+        # Record which address actually answered. Nothing else in this class
+        # correlates a response with its request, so callers need this to detect
+        # a frame being attributed to the wrong pack.
+        self._last_response_addr = header_binary[1]
+
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "RX frame (%d bytes): %s",
+                len(frame), frame.hex(" "),
+            )
+            _LOGGER.debug(
+                "RX header: ver=0x%02X addr=0x%02X cid1=0x%02X cid2=0x%02X len=0x%04X",
+                header_binary[0], header_binary[1], header_binary[2],
+                header_binary[3], int.from_bytes(header_binary[4:6], "big"),
+            )
+
         # Check for error responses
         response_ver = header_binary[0]
         response_cid2 = header_binary[3]
@@ -545,6 +564,36 @@ class TCPBinaryProtocol(ProtocolBase):
         # Skip first TWO bytes before parsing
         data_without_prefix = response[2:]
 
+        # Diagnostics only - does NOT yet change behaviour.
+        #
+        # Neither _send_frame nor this method correlates a response with its
+        # request: _send_frame returns whatever frame arrives next on the
+        # socket. If a slow reply lands after its request timed out, the next
+        # pack polled reads it and the data is silently attributed to the wrong
+        # pack. That is the leading explanation for non-monotonic cycle counts
+        # on packs 2-6 while pack 1 (polled first) stays clean.
+        #
+        # Log both identifiers the BMS gives us - the frame header ADDR and the
+        # pack ID in payload byte 1 - against what we asked for. If these
+        # warnings appear, the misattribution theory is confirmed and the read
+        # path needs request/response correlation.
+        resp_addr = getattr(self, "_last_response_addr", None)
+        resp_pack = response[1]
+        if resp_pack != dev_id or (resp_addr is not None and resp_addr != dev_id):
+            _LOGGER.warning(
+                "Analog response mismatch: requested pack %d but frame reports "
+                "addr=%s payload_pack=%d - data may belong to another pack",
+                dev_id,
+                f"0x{resp_addr:02X}" if resp_addr is not None else "?",
+                resp_pack,
+            )
+        elif _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug(
+                "Analog response pack %d OK (addr=0x%02X), payload %d bytes: %s",
+                dev_id, resp_addr if resp_addr is not None else 0,
+                len(response), response.hex(" "),
+            )
+
         return self._parse_analog_response(data_without_prefix)
 
     def _parse_analog_response(self, data: bytes) -> dict[str, Any]:
@@ -633,16 +682,42 @@ class TCPBinaryProtocol(ProtocolBase):
         idx += 4
 
         # Cycle count (1 byte)
-        cycles = data[idx] if len(data) > idx else 0
+        #
+        # A truncated frame must yield None, never 0. Returning 0 here fed a
+        # bogus zero into a TOTAL_INCREASING sensor, which Home Assistant reads
+        # as a counter reset and which corrupts long-term statistics. The
+        # coordinator already skips fields that are None.
+        if len(data) > idx:
+            cycles = data[idx]
+        else:
+            _LOGGER.warning(
+                "Analog frame truncated before cycle count (len=%d, need>%d); "
+                "reporting cycle_count as unknown",
+                len(data), idx,
+            )
+            cycles = None
         idx += 1
 
         # Total capacity (2 bytes, in 10mAh units)
-        total_raw = int.from_bytes(data[idx:idx + 2], 'big')  # BMS sends big-endian
-        total = round(total_raw / 100, 2)  # Convert to Ah
+        #
+        # Same hazard: int.from_bytes(b"", "big") is 0, so a short frame used to
+        # silently produce total_capacity=0, which forced the SoC calculation
+        # below to report 0% on a healthy battery.
+        if len(data) >= idx + 2:
+            total_raw = int.from_bytes(data[idx:idx + 2], 'big')  # BMS sends big-endian
+            total = round(total_raw / 100, 2)  # Convert to Ah
+        else:
+            _LOGGER.warning(
+                "Analog frame truncated before total capacity (len=%d, need>=%d); "
+                "reporting total_capacity and SoC as unknown",
+                len(data), idx + 2,
+            )
+            total = None
         idx += 2
 
         # Calculate derived values
-        soc = int((remaining / total) * 100) if total > 0 else 0
+        # SoC is unknown - not zero - when total capacity could not be read.
+        soc = int((remaining / total) * 100) if total else None
         power = round(voltage * current, 2)
 
         return {

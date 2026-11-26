@@ -92,7 +92,18 @@ SENSOR_MAPPINGS: dict[str, tuple[str, SensorDeviceClass | None, str | None, Sens
     "error_code": ("Error Code", None, None, None),
 
     # Cycle count (binary protocol)
-    "cycle_count": ("Cycle Count", None, "cycles", SensorStateClass.TOTAL_INCREASING),
+    #
+    # MEASUREMENT, not TOTAL_INCREASING, until the analog frame is verified.
+    # The value observed on a 6-pack SOK rack is not monotonic: packs 2-6 show
+    # hundreds of 1-2 count downticks, while pack 1 (read first, on a clean
+    # socket buffer) is flawless. TOTAL_INCREASING treats every downtick as a
+    # counter reset and corrupts long-term statistics.
+    #
+    # Suspected cause is that _send_frame does not correlate responses with
+    # requests - the pack ID the BMS returns in byte 1 is discarded - so a late
+    # frame can be attributed to the next pack polled. Restore TOTAL_INCREASING
+    # once that is fixed and the value is confirmed monotonic.
+    "cycle_count": ("Cycle Count", None, "cycles", SensorStateClass.MEASUREMENT),
 
     # Status groups (binary protocol) - show active flags or "Normal"
     "protect_status": ("Protection Status", None, None, None),
