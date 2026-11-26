@@ -47,7 +47,7 @@ class PylontechFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> PylontechOptionsFlowHandler:
         """Get the options flow for this handler."""
-        return PylontechOptionsFlowHandler(config_entry)
+        return PylontechOptionsFlowHandler()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -193,11 +193,10 @@ class PylontechFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class PylontechOptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle options flow for Pylontech BMS."""
+    """Handle options flow for Pylontech BMS.
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
+    HA (2025.12+) sets the read-only ``self.config_entry`` itself; assigning it raises.
+    """
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
